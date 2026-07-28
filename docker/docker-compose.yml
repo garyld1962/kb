@@ -1,0 +1,20 @@
+# kb-server — port 8090, vault mounted read-write, Qdrant/Ollama
+# reached over the LAN (per the design's Deployment section).
+
+services:
+  kb-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: kb-server:latest
+    ports:
+      - "8090:8090"
+    volumes:
+      - /data/obsidian:/data/obsidian
+    # Image defaults to UID:GID 999:999 (the `kb` user baked into the
+    # Dockerfile). Override to match /data/obsidian's actual owner if it
+    # isn't 999:999, or the Inbox -> destination move will fail with a
+    # permission error once a note is embedded/indexed (see README
+    # Troubleshooting). E.g.: KB_UID=$(id -u) KB_GID=$(id -g) docker compose up -d
+    user: "${KB_UID:-999}:${KB_GID:-999}"
+    restart: unless-stopped

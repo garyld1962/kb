@@ -1,0 +1,65 @@
+{
+  "run": "2026-07-09-163242",
+  "plan_file": "docs/plans/2026-07-08-kb-v1-capture-search.md",
+  "verdict": "WARN",
+  "gate_state": "manually-closed-pending-adversarial-review",
+  "trigger": "warn-verdict-plus-accepted-risk-deviation-plus-operator-stop",
+  "mode": "full",
+  "recommendations": [
+    {
+      "id": "R-001",
+      "target": "execute-plan-skill",
+      "type": "tune-trigger",
+      "summary": "Editing plan Closed Decisions busts every task's agent-call cache, forcing a full re-verification pass for a one-line documentation fix.",
+      "evidence": "5 resumes, 3 triggered purely by plan-amendment edits (7b8684a, 19bca30, 23c4c9b), each costing a full 11-task redo (~1-1.9M tokens, 15-55 min)",
+      "actionable": true,
+      "confidence": "high"
+    },
+    {
+      "id": "R-002",
+      "target": "execute-plan-skill",
+      "type": "improve-prompt",
+      "summary": "plan-alignment deviation IDs are non-deterministic LLM slugs, so acceptRisk exact-match can't reliably target the same recurring deviation across resumes.",
+      "evidence": "Same deviation named run-plan-mjs-gatefindings-fix, then execute-plan-gatefindings-fix, then run-plan-mjs-gate-fix across 3 resumes",
+      "actionable": true,
+      "confidence": "high"
+    },
+    {
+      "id": "R-003",
+      "target": "execute-plan-skill",
+      "type": "relax-gate",
+      "summary": "gateFindings() threw on any open finding instead of only critical/major, contradicting the disposition rubric's WARN semantics. Fixed locally; needs upstreaming to savviety-skills.",
+      "evidence": "commit a64364a in this repo's .claude/skills/execute-plan/workflows/run-plan.mjs",
+      "actionable": true,
+      "confidence": "high"
+    },
+    {
+      "id": "R-004",
+      "target": "execute-prd-skill",
+      "type": "add-rubric-rule",
+      "summary": "Cross-check every library named in a plan's Closed Decisions actually appears in the scaffolding task's dependency list.",
+      "evidence": "Task 1 named FastAPI/httpx/uvicorn/watchdog as stack choices but never added them as pyproject.toml dependencies, blocking Task 9 (commit 051db5b fixed it)",
+      "actionable": true,
+      "confidence": "high"
+    },
+    {
+      "id": "R-005",
+      "target": "plan-template",
+      "type": "add-rubric-rule",
+      "summary": "Cross-check every test file implied by an acceptance bullet (e.g. -k <slice>) has a matching write_scope entry.",
+      "evidence": "Tasks 6/7/8 acceptance named unit-test slices whose files were never declared in write_scope (commit 23c4c9b fixed it)",
+      "actionable": true,
+      "confidence": "medium"
+    },
+    {
+      "id": "R-006",
+      "target": "execute-plan-skill",
+      "type": "tighten-gate",
+      "summary": "A task redone after an unrelated cache-bust may rewrite a file widely enough to clobber an earlier review-fix commit's change to the same file.",
+      "evidence": "kb-ask timeout finding fixed twice across two resumes (7e6f6e1 then 8819480) despite the first fix being an ancestor commit",
+      "actionable": true,
+      "confidence": "medium"
+    }
+  ],
+  "headline": "Editing plan Closed Decisions busts every task's agent-call cache, turning a one-line documentation fix into a full re-verification pass — this was the single biggest cost driver across this run's 5 resumes."
+}

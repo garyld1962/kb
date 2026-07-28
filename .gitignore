@@ -1,0 +1,18 @@
+CLAUDE.local.md
+.claude/journal/*.md
+.claude/journal/.lock.*
+.claude/SESSION.md
+.claude/settings.local.json
+.claude.bak-*/
+.claude/
+
+# Local AI session tooling — never published (skills live in savviety-skills)
+.claude/
+.claude.bak-*/
+CLAUDE.md
+CLAUDE.local.md
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+dist/

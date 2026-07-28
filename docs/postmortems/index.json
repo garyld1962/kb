@@ -1,0 +1,18 @@
+[
+  {
+    "run": "2026-07-09-163242",
+    "run_folder": "docs/runs/2026-07-09-163242/",
+    "plan_slug": "kb-v1-capture-search",
+    "verdict": "WARN",
+    "gate_state": "manually-closed-pending-adversarial-review",
+    "trigger": "warn-verdict-plus-accepted-risk-deviation-plus-operator-stop",
+    "recommendations": [
+      {"id": "R-001", "target": "execute-plan-skill", "type": "tune-trigger", "summary": "Closed-Decisions edits bust every task's cache, forcing full re-verification for one-line doc fixes.", "actionable": true, "confidence": "high"},
+      {"id": "R-002", "target": "execute-plan-skill", "type": "improve-prompt", "summary": "plan-alignment deviation IDs are non-deterministic, breaking acceptRisk across resumes.", "actionable": true, "confidence": "high"},
+      {"id": "R-003", "target": "execute-plan-skill", "type": "relax-gate", "summary": "gateFindings() incorrectly blocked on any open finding, not just critical/major; fixed locally, needs upstreaming.", "actionable": true, "confidence": "high"},
+      {"id": "R-004", "target": "execute-prd-skill", "type": "add-rubric-rule", "summary": "Cross-check Closed-Decision-named libraries appear in the scaffolding task's actual dependencies.", "actionable": true, "confidence": "high"},
+      {"id": "R-005", "target": "plan-template", "type": "add-rubric-rule", "summary": "Cross-check acceptance-implied test files have matching write_scope entries.", "actionable": true, "confidence": "medium"},
+      {"id": "R-006", "target": "execute-plan-skill", "type": "tighten-gate", "summary": "Redone tasks may clobber earlier review-fix commits to the same file.", "actionable": true, "confidence": "medium"}
+    ]
+  }
+]
