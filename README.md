@@ -4,7 +4,8 @@
 
 Capture notes and AI work logs from any machine into a local Obsidian
 vault, and semantically search/ask over them via a small server backed by
-Qdrant + Ollama.
+Qdrant, Voyage AI (embedding + reranking), and an OpenAI-compatible LLM
+server such as oMLX (answer generation).
 
 This is **v1: capture + search**. MCP and nightly AI-log summarization are
 a planned follow-on, not implemented yet (see
@@ -17,18 +18,24 @@ a planned follow-on, not implemented yet (see
   `search`/`ask` call **kb-server** over HTTP.
 - **kb-server** — one instance on an always-on host, watching a vault's
   `Inbox/` and `AI-Daily-Log/` folders. It
-  chunks, embeds (Ollama), and indexes captures into Qdrant, and serves
-  `/status`, `/search`, `/ask`.
-- **Qdrant + Ollama** — existing services kb-server talks to. Defaults are
-  `http://localhost:6333` and `http://localhost:11434`; override with
-  `KB_QDRANT_URL` and `KB_OLLAMA_URL` when they run on another host.
+  chunks, embeds (Voyage `voyage-4`), and indexes captures into Qdrant.
+  `/search` and `/ask` over-fetch candidates from Qdrant and rerank them
+  with Voyage `rerank-2.5`; `/ask` then answers through the LLM server.
+- **Qdrant + LLM server** — existing services kb-server talks to. Defaults
+  are `http://localhost:6333` and `http://localhost:8085/v1`; override with
+  `KB_QDRANT_URL` and `KB_LLM_URL` when they run on another host. The
+  answer model defaults to `Qwen3.6-35B-A3B-8bit`; override with
+  `KB_LLM_MODEL` (use the id the server lists under `/v1/models`).
+- **Voyage AI** — hosted embedding and rerank API. kb-server reads the key
+  from `VOYAGE_API_KEY` (e.g. `op read 'op://Infra/Voyage API Key/credential'`).
 
 ## Requirements
 
 - Python 3.12 (pinned via `.python-version`)
 - [`uv`](https://docs.astral.sh/uv/)
-- A reachable Qdrant instance and an Ollama instance with `mxbai-embed-large`
-  pulled (and `qwen3.5:9b` if you'll use `kb ask`)
+- A Voyage AI API key in `VOYAGE_API_KEY`
+- A reachable Qdrant instance (and an OpenAI-compatible LLM server, e.g.
+  oMLX, if you'll use `kb ask`)
 
 ## Install
 
@@ -80,7 +87,7 @@ want to change first).
 **Locally (dev, or a single-machine setup):**
 
 ```bash
-uv run kb-server
+VOYAGE_API_KEY=... uv run kb-server
 ```
 
 Runs on port `8090`, backed by whatever `vault_path` your config points
@@ -94,16 +101,17 @@ uv run uvicorn kb.server.app:app --host 0.0.0.0 --port 8091
 (and set `server_url` in your config to match).
 
 **As a container** (`docker/docker-compose.yml`, mounts `/data/obsidian`;
-set `KB_QDRANT_URL`/`KB_OLLAMA_URL` if those services are on another host):
+set `KB_QDRANT_URL`/`KB_LLM_URL` if those services are on another host;
+`VOYAGE_API_KEY` is required):
 
 ```bash
 cd docker
-docker compose up -d --build
+VOYAGE_API_KEY=... docker compose up -d --build
 curl http://localhost:8090/status   # {"status": "ok", ...}
 ```
 
-`/status` also reports `qdrant_ok`, `ollama_ok`, `embed_failed_backlog`,
-and `watchers_ok` — useful for confirming a fresh deploy actually wired
+`/status` also reports `qdrant_ok`, `llm_ok`, `voyage_ok` (key
+configured), `embed_failed_backlog`, and `watchers_ok` — useful for confirming a fresh deploy actually wired
 up correctly.
 
 The container defaults to UID:GID `999:999` (the `kb` user baked into the
@@ -143,9 +151,9 @@ still land in the vault either way.
 | `kb add [content] [--stdin] [--title] [--tags a,b] [--project] [--destination] [--source-type url\|text\|file\|stdin\|mcp\|agent]` | No | Writes to vault `Inbox/` |
 | `kb log <project> <message>` | No | Appends to today's `AI-Daily-Log/<project>/<date>.md`; auto-creates unknown projects with a warning |
 | `kb readlog <project> [--date YYYY-MM-DD] [--range START:END]` | No | Reads directly from the vault |
-| `kb status` | Yes | Vault/server health, incl. Qdrant/Ollama reachability |
+| `kb status` | Yes | Vault/server health, incl. Qdrant/LLM reachability and Voyage key |
 | `kb search <query> [--logs]` | Yes | Semantic search; `--logs` targets `kb_logs` instead of `kb_knowledge` |
-| `kb ask <question>` | Yes | RAG answer with citations (uses `qwen3.5:9b`) |
+| `kb ask <question>` | Yes | RAG answer with citations (uses `KB_LLM_MODEL`) |
 | `kb config [get\|set] [key] [value]` | No | View/edit `~/.config/kb/config.yaml` |
 
 ## Vault layout kb-server expects
@@ -159,13 +167,27 @@ still land in the vault either way.
 └── Inbox/_errors/      # malformed/corrupted captures get quarantined here
 ```
 
+## Migrating an index from the Ollama embedder
+
+Vectors written before the switch to Voyage (`mxbai-embed-large`) are not
+comparable with `voyage-4` vectors, and the reindex pass only re-embeds
+documents whose content hash changed. On an existing deployment, drop both
+collections once and let the next reindex pass rebuild them from the vault:
+
+```bash
+curl -X DELETE http://<qdrant>:6333/collections/kb_knowledge
+curl -X DELETE http://<qdrant>:6333/collections/kb_logs
+```
+
+Then restart kb-server; `ensure_collections()` recreates them empty.
+
 ## Troubleshooting
 
 - **`kb-server unreachable...`** — `server_url` doesn't point
   at a running kb-server, or it's down. Check `kb config get server_url`
   and `curl <server_url>/status`.
 - **Capture never shows up in search** — check kb-server's logs for
-  embed/index errors, and that Qdrant/Ollama are reachable from wherever
+  embed/index errors, and that Qdrant/Voyage are reachable from wherever
   kb-server runs. `kb status`'s `embed_failed_backlog` counts captures
   stuck retrying.
 - **Capture shows up in search but the file is still sitting in `Inbox/`

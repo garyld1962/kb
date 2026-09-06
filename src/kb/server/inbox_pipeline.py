@@ -19,7 +19,7 @@ Malformed frontmatter (or an unreadable/binary file) is moved to
 past its own boundary so a filesystem watcher keeps running. An unknown
 ``project`` is auto-registered in ``_project-registry.md`` and warned about.
 
-If Ollama or Qdrant is unreachable, the embed/index clients retry with
+If Voyage or Qdrant is unreachable, the embed/index clients retry with
 exponential backoff (:mod:`kb.server.embed`, :mod:`kb.server.index`); once
 those retries are exhausted the note's frontmatter is rewritten in place
 with ``status: embed_failed`` and the file is left where it is (not moved,
@@ -331,7 +331,7 @@ def _process_inbox_file_locked(
         )
     except Exception as exc:  # noqa: BLE001 - contain so the watcher keeps running
         # Unexpected failures land here; the file is left in place for a later
-        # retry and the failure is logged, not raised. Ollama/Qdrant outages
+        # retry and the failure is logged, not raised. Voyage/Qdrant outages
         # are caught earlier, in ``_process_valid_note``, and marked
         # ``embed_failed`` rather than falling through to this generic branch.
         logger.exception("inbox processing failed for %s", path)
@@ -423,7 +423,7 @@ def _process_valid_note(
 
             index_client.upsert_chunks(KNOWLEDGE_COLLECTION, payloads, vectors)
         except (EmbedUnavailableError, IndexUnavailableError) as exc:
-            # Ollama/Qdrant is unreachable even after the clients' own retry/backoff
+            # Voyage/Qdrant is unreachable even after the clients' own retry/backoff
             # exhausted. Nothing has been upserted yet (the upsert call only ever
             # happens once all chunks are embedded), so there is no partial index
             # to unwind. Mark the note for a later retry instead of moving it: the

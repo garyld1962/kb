@@ -5,7 +5,7 @@ Runs a scan (default every 30 minutes, via :class:`ReindexScheduler`) over
 index against direct-in-Obsidian edits that bypass the Inbox/watcher paths
 (the ones ``inbox_pipeline``/``log_pipeline`` react to live). Each pass also
 sweeps ``Inbox/`` for notes left in ``status: embed_failed`` (an earlier
-Ollama/Qdrant outage that exhausted the pipeline's own retries) and retries
+Voyage/Qdrant outage that exhausted the pipeline's own retries) and retries
 them, so a note can't get stuck forever waiting for a filesystem event that
 may never come. For each document found on disk, its current
 ``doc_hash``/``doc_path`` is compared against what is currently indexed:
@@ -404,7 +404,7 @@ def _embed_document(
     """Chunk and embed ``scanned``, returning payloads/vectors ready to upsert.
 
     Does not touch the index. Embedding is the failure-prone step (transient
-    Ollama outages), so callers must finish this before touching any of the
+    Voyage outages), so callers must finish this before touching any of the
     document's existing chunks — otherwise a failed embed leaves the document
     unindexed until the next reindex pass.
     """

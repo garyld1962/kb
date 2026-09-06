@@ -2,32 +2,39 @@
 
 No auth (LAN-only, per the design's closed decisions):
 
-- ``GET /status`` — health check; pings Qdrant/Ollama, reports the
+- ``GET /status`` — health check; pings Qdrant and the LLM server, checks the Voyage
+  key is configured, reports the
   embed_failed backlog size, and reports whether the Inbox/Log watchers and
   reindex scheduler threads are still alive, so it reflects the service's
   actual health rather than only that the process is up.
 - ``POST /search`` — semantic search over ``kb_knowledge`` by default;
   set ``collection`` to ``kb_logs`` to search the daily-log index instead.
+  Candidates come from Qdrant and are reranked by Voyage ``rerank-2.5``.
 - ``POST /ask`` — retrieve the top-k chunks and synthesize an answer with
-  Ollama ``qwen3.5:9b``, returning the answer plus its supporting citations.
+  the OpenAI-compatible LLM server (oMLX, ``KB_LLM_URL``/``KB_LLM_MODEL``),
+  returning the answer plus its supporting citations.
 
-The embed, index, and LLM clients are provided through FastAPI dependencies
+The embed, index, rerank, and LLM clients are provided through FastAPI dependencies
 so tests can override them with in-memory fakes (no network access).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import threading
+import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel, Field
 
 from kb.core.config import load_config
-from kb.server.embed import DEFAULT_OLLAMA_URL, EmbedClient
+from kb.server.embed import EmbedClient
+from kb.server.rerank import RerankClient
 from kb.server.index import (
     DEFAULT_SEARCH_LIMIT,
     KNOWLEDGE_COLLECTION,
@@ -41,15 +48,26 @@ from kb.server.watcher import InboxWatcher, LogWatcher
 # Port kb-server listens on (Docker deployment, per the design spec).
 SERVER_PORT = 8090
 
-# Answer-synthesis model (per the plan's Task 9 closed decision).
-ANSWER_MODEL = "qwen3.5:9b"
+# OpenAI-compatible chat endpoint for answer synthesis (oMLX on the inference
+# host; override with KB_LLM_URL). Embedding does not go through it; see
+# ``kb.server.embed``.
+DEFAULT_LLM_URL = "http://localhost:8085/v1"
+# Answer-synthesis model as the server lists it under ``/v1/models``
+# (override with KB_LLM_MODEL).
+ANSWER_MODEL = "Qwen3.6-35B-A3B-8bit"
 # Default number of chunks retrieved as context for /ask.
 DEFAULT_TOP_K = 5
+# /search and /ask over-fetch this many times ``limit`` from Qdrant, capped
+# at RERANK_CANDIDATE_CAP, then let the Voyage reranker pick the top ``limit``.
+RERANK_CANDIDATE_FACTOR = 4
+RERANK_CANDIDATE_CAP = 100
 # Seconds to wait on the answer-generation HTTP call before giving up.
-# qwen3.5:9b is a "thinking" model; observed generation latency for even a
-# trivial one-word prompt on the configured Ollama host was ~139s, so this
-# must sit comfortably above that rather than a nominal "should be enough".
+# Thinking is disabled per request (``enable_thinking: false``), so a
+# 5-chunk answer takes seconds on oMLX; the generous ceiling covers a cold
+# model load or a busy host.
 LLM_TIMEOUT = 240
+# Seconds to wait on the LLM reachability check used by ``/status``.
+PING_TIMEOUT = 5
 
 # The two collections a request may target. A Literal gives automatic 422s on
 # any other value; the strings mirror the constants in ``kb.server.index``.
@@ -57,28 +75,48 @@ CollectionName = Literal["kb_knowledge", "kb_logs"]
 
 
 class LLMClient:
-    """Answer synthesis via Ollama's generate endpoint (``qwen3.5:9b``).
+    """Answer synthesis via an OpenAI-compatible ``/chat/completions`` endpoint.
 
-    The single HTTP call is isolated in :meth:`_post` so tests substitute a
-    fake without touching the network.
+    Thinking is disabled per request so the reply is the answer itself, not
+    a reasoning trace. The single HTTP call is isolated in :meth:`_post` so
+    tests substitute a fake without touching the network.
     """
 
-    def __init__(self, host: str = DEFAULT_OLLAMA_URL, model: str = ANSWER_MODEL) -> None:
+    def __init__(self, host: str | None = None, model: str | None = None) -> None:
+        if host is None:
+            host = os.environ.get("KB_LLM_URL", DEFAULT_LLM_URL)
+        if model is None:
+            model = os.environ.get("KB_LLM_MODEL", ANSWER_MODEL)
         self.host = host.rstrip("/")
         self.model = model
 
     def generate(self, prompt: str) -> str:
-        """Return the model's completion for ``prompt``."""
+        """Return the model's answer for ``prompt``."""
 
         response = self._post(
-            {"model": self.model, "prompt": prompt, "stream": False}
+            {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
         )
-        return response["response"]
+        return response["choices"][0]["message"]["content"]
+
+    def ping(self) -> bool:
+        """Return whether the LLM server is reachable, without invoking the model."""
+
+        request = urllib.request.Request(f"{self.host}/models", method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=PING_TIMEOUT):
+                return True
+        except (urllib.error.URLError, OSError):
+            return False
 
     def _post(self, payload: dict) -> dict:
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
-            f"{self.host}/api/generate",
+            f"{self.host}/chat/completions",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -102,6 +140,10 @@ def get_index_client() -> IndexClient:
 
 def get_llm_client() -> LLMClient:
     return LLMClient()
+
+
+def get_rerank_client() -> RerankClient:
+    return RerankClient()
 
 
 # --------------------------------------------------------------------------- #
@@ -190,7 +232,8 @@ class Citation(BaseModel):
 class StatusResponse(BaseModel):
     status: str
     qdrant_ok: bool
-    ollama_ok: bool
+    llm_ok: bool
+    voyage_ok: bool
     embed_failed_backlog: int
     watchers_ok: bool
 
@@ -264,11 +307,12 @@ def status(
     request: Request,
     embed: EmbedClient = Depends(get_embed_client),
     index: IndexClient = Depends(get_index_client),
+    llm: LLMClient = Depends(get_llm_client),
 ) -> StatusResponse:
-    """Health check: pings Qdrant/Ollama and reports the embed_failed backlog.
+    """Health check: pings Qdrant and the LLM, checks the Voyage key, reports backlog.
 
-    ``status`` is ``"degraded"`` rather than ``"ok"`` when either dependency
-    is unreachable, when notes are stuck in ``embed_failed`` awaiting a retry
+    ``status`` is ``"degraded"`` rather than ``"ok"`` when any dependency
+    is unreachable or unconfigured, when notes are stuck in ``embed_failed`` awaiting a retry
     sweep, or when the Inbox/Log watcher or reindex scheduler thread has died
     — otherwise a watcher killed by an unhandled exception left this endpoint
     reporting healthy indefinitely, with indexing silently and permanently
@@ -276,17 +320,47 @@ def status(
     """
 
     qdrant_ok = index.ping()
-    ollama_ok = embed.ping()
+    llm_ok = llm.ping()
+    voyage_ok = embed.ping()
     backlog = count_embed_failed_notes(load_config().vault_path)
     watchers_ok = _watchers_alive(request.app.state)
-    healthy = qdrant_ok and ollama_ok and backlog == 0 and watchers_ok
+    healthy = qdrant_ok and llm_ok and voyage_ok and backlog == 0 and watchers_ok
     return StatusResponse(
         status="ok" if healthy else "degraded",
         qdrant_ok=qdrant_ok,
-        ollama_ok=ollama_ok,
+        llm_ok=llm_ok,
+        voyage_ok=voyage_ok,
         embed_failed_backlog=backlog,
         watchers_ok=watchers_ok,
     )
+
+
+def _retrieve(
+    query: str,
+    collection: str,
+    limit: int,
+    embed: EmbedClient,
+    index: IndexClient,
+    rerank: RerankClient,
+) -> list[Citation]:
+    """Embed ``query``, over-fetch candidates from Qdrant, rerank, keep ``limit``.
+
+    Returned citations carry the reranker's relevance score, not Qdrant's
+    cosine score.
+    """
+
+    vector = embed.embed(query, input_type="query")
+    candidates = index.search(
+        vector, collection, min(limit * RERANK_CANDIDATE_FACTOR, RERANK_CANDIDATE_CAP)
+    )
+    if not candidates:
+        return []
+    ranked = rerank.rerank(
+        query, [hit.payload.get("content", "") for hit in candidates], top_k=limit
+    )
+    return [
+        _citation(replace(candidates[i], score=score)) for i, score in ranked
+    ]
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -294,10 +368,13 @@ def search(
     request: SearchRequest,
     embed: EmbedClient = Depends(get_embed_client),
     index: IndexClient = Depends(get_index_client),
+    rerank: RerankClient = Depends(get_rerank_client),
 ) -> SearchResponse:
-    vector = embed.embed(request.query)
-    hits = index.search(vector, request.collection, request.limit)
-    return SearchResponse(results=[_citation(hit) for hit in hits])
+    return SearchResponse(
+        results=_retrieve(
+            request.query, request.collection, request.limit, embed, index, rerank
+        )
+    )
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -305,11 +382,12 @@ def ask(
     request: AskRequest,
     embed: EmbedClient = Depends(get_embed_client),
     index: IndexClient = Depends(get_index_client),
+    rerank: RerankClient = Depends(get_rerank_client),
     llm: LLMClient = Depends(get_llm_client),
 ) -> AskResponse:
-    vector = embed.embed(request.question)
-    hits = index.search(vector, request.collection, request.limit)
-    citations = [_citation(hit) for hit in hits]
+    citations = _retrieve(
+        request.question, request.collection, request.limit, embed, index, rerank
+    )
     answer = llm.generate(_build_prompt(request.question, citations))
     return AskResponse(answer=answer, citations=citations)
 

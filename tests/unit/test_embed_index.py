@@ -1,4 +1,4 @@
-"""Unit tests for the embed (Ollama) and index (Qdrant) clients.
+"""Unit tests for the embed (Voyage) and index (Qdrant) clients.
 
 Both clients talk to their services over HTTP. These tests exercise the
 wrapper logic against in-memory fakes injected in place of the real HTTP
@@ -7,12 +7,13 @@ transport, so no network access is required.
 
 from __future__ import annotations
 
+import urllib.error
 from datetime import datetime, timezone
 
 import pytest
 
 from kb.core.models import QdrantPayload
-from kb.server.embed import EMBED_DIM, EmbedClient
+from kb.server.embed import EMBED_DIM, EmbedClient, EmbedUnavailableError
 from kb.server.index import (
     COLLECTIONS,
     KNOWLEDGE_COLLECTION,
@@ -107,10 +108,14 @@ def payloads_in(transport: FakeQdrantTransport, collection: str) -> list[dict]:
 # --- embed client ---------------------------------------------------------
 
 
+def voyage_response(vector: list[float]) -> dict:
+    return {"object": "list", "data": [{"embedding": vector, "index": 0}]}
+
+
 def test_embed_returns_expected_dimension(monkeypatch):
-    client = EmbedClient()
+    client = EmbedClient(api_key="k")
     monkeypatch.setattr(
-        client, "_post", lambda payload: {"embedding": [0.1] * EMBED_DIM}
+        client, "_post", lambda payload: voyage_response([0.1] * EMBED_DIM)
     )
     vector = client.embed("hello world")
     assert isinstance(vector, list)
@@ -118,16 +123,88 @@ def test_embed_returns_expected_dimension(monkeypatch):
 
 
 def test_embed_rejects_wrong_dimension(monkeypatch):
-    client = EmbedClient()
-    monkeypatch.setattr(client, "_post", lambda payload: {"embedding": [0.1, 0.2]})
+    client = EmbedClient(api_key="k")
+    monkeypatch.setattr(client, "_post", lambda payload: voyage_response([0.1, 0.2]))
     with pytest.raises(ValueError):
         client.embed("hello world")
 
 
-def test_embed_default_host_and_model():
+def test_embed_sends_voyage_document_payload_by_default(monkeypatch):
+    client = EmbedClient(api_key="k")
+    sent = []
+    monkeypatch.setattr(
+        client, "_post", lambda payload: sent.append(payload) or voyage_response([0.0] * EMBED_DIM)
+    )
+    client.embed("chunk text")
+    assert sent == [{"input": ["chunk text"], "model": "voyage-4", "input_type": "document"}]
+
+
+def test_embed_query_input_type(monkeypatch):
+    client = EmbedClient(api_key="k")
+    sent = []
+    monkeypatch.setattr(
+        client, "_post", lambda payload: sent.append(payload) or voyage_response([0.0] * EMBED_DIM)
+    )
+    client.embed("what did I decide", input_type="query")
+    assert sent[0]["input_type"] == "query"
+
+
+def test_embed_default_host_model_and_key_from_env(monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "env-key")
     client = EmbedClient()
-    assert client.host == "http://localhost:11434"
-    assert client.model == "mxbai-embed-large"
+    assert client.host == "https://api.voyageai.com"
+    assert client.model == "voyage-4"
+    assert client.api_key == "env-key"
+
+
+def test_embed_ping_reports_whether_key_is_configured(monkeypatch):
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    assert EmbedClient().ping() is False
+    assert EmbedClient(api_key="k").ping() is True
+
+
+def _http_error(status: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://api.voyageai.com", status, "err", {}, None)
+
+
+def test_embed_retries_rate_limit_then_succeeds(monkeypatch):
+    client = EmbedClient(api_key="k")
+    attempts = []
+
+    def post(payload):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise _http_error(429)
+        return voyage_response([0.1] * EMBED_DIM)
+
+    monkeypatch.setattr(client, "_post", post)
+    monkeypatch.setattr("kb.server.embed.time.sleep", lambda s: None)
+    assert len(client.embed("x")) == EMBED_DIM
+    assert len(attempts) == 3
+
+
+def test_embed_unauthorized_is_unavailable_not_a_note_defect(monkeypatch):
+    """A bad key is an operator problem: leave the note retryable, don't quarantine it."""
+
+    client = EmbedClient(api_key="bad")
+    monkeypatch.setattr(client, "_post", lambda payload: (_ for _ in ()).throw(_http_error(401)))
+    monkeypatch.setattr("kb.server.embed.time.sleep", lambda s: None)
+    with pytest.raises(EmbedUnavailableError):
+        client.embed("x")
+
+
+def test_embed_bad_request_is_not_retried(monkeypatch):
+    client = EmbedClient(api_key="k")
+    attempts = []
+
+    def post(payload):
+        attempts.append(1)
+        raise _http_error(400)
+
+    monkeypatch.setattr(client, "_post", post)
+    with pytest.raises(urllib.error.HTTPError):
+        client.embed("x")
+    assert len(attempts) == 1
 
 
 # --- index client: payload shape -----------------------------------------

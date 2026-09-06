@@ -72,7 +72,7 @@ class LogEntryBlock:
 class LogIndexResult:
     """Outcome of :meth:`LogPipeline.handle` for one file-change event.
 
-    ``status`` is ``"ok"`` unless Ollama/Qdrant was unreachable, in which case
+    ``status`` is ``"ok"`` unless Voyage/Qdrant was unreachable, in which case
     it is ``"embed_failed"`` and nothing from this delta was indexed; the
     in-memory ``_indexed`` set is left untouched so the same delta is retried
     on the next change event (safe, since re-index (Task 8) is
@@ -292,7 +292,7 @@ class LogPipeline:
                 vectors = [self.embed.embed(content) for content in contents]
                 self.index.upsert_chunks(self.collection, payloads, vectors)
         except (EmbedUnavailableError, IndexUnavailableError) as exc:
-            # Ollama/Qdrant is unreachable even after the clients' own
+            # Voyage/Qdrant is unreachable even after the clients' own
             # retry/backoff exhausted. ``indexed`` is not updated, so this
             # same delta is picked up again on the next change event.
             logger.warning("embed_failed indexing delta for %s: %s", doc_id, exc)

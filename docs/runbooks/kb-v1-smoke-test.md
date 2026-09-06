@@ -12,12 +12,11 @@ Manual-only end-to-end check: `kb add` -> wait for kb-server's processor ->
   `kb_knowledge`/`kb_logs` pre-created — kb-server's startup lifespan calls
   `ensure_collections()` before the watchers start, so a genuinely fresh
   Qdrant instance is bootstrapped automatically.
-- Ollama reachable at `http://localhost:11434` with both models pulled:
-
-  ```
-  ollama pull mxbai-embed-large
-  ollama pull qwen3.5:9b
-  ```
+- An OpenAI-compatible LLM server (oMLX) reachable at `KB_LLM_URL`
+  (default `http://localhost:8085/v1`) serving `KB_LLM_MODEL`. Embedding
+  and reranking go to Voyage AI, so only `kb ask` needs it.
+- `VOYAGE_API_KEY` exported in the environment that starts kb-server
+  (`op read 'op://Infra/Voyage API Key/credential'`).
 
 **Dev the server** (the machine running kb-server for this test):
 
@@ -80,6 +79,6 @@ moved from `Inbox/` to its `destination` folder in the vault.
   in `docker/docker-compose.yml`.
 - Capture never appears in search — check kb-server's logs
   (`docker compose -f docker/docker-compose.yml logs -f kb-server`) for
-  embed/index errors; confirm Qdrant and Ollama are reachable from inside
+  embed/index errors; confirm Qdrant and Voyage are reachable from inside
   the container (`docker compose exec kb-server curl http://localhost:6333`
   and `http://localhost:11434`).
