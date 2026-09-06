@@ -1,5 +1,6 @@
-# kb-server — port 8090, vault mounted read-write, Qdrant/Ollama
-# reached over the LAN (per the design's Deployment section).
+# kb-server — port 8090, vault mounted read-write, Qdrant/LLM server
+# reached over the LAN (per the design's Deployment section), Voyage AI
+# over the internet.
 
 services:
   kb-server:
@@ -17,4 +18,9 @@ services:
     # permission error once a note is embedded/indexed (see README
     # Troubleshooting). E.g.: KB_UID=$(id -u) KB_GID=$(id -g) docker compose up -d
     user: "${KB_UID:-999}:${KB_GID:-999}"
+    environment:
+      VOYAGE_API_KEY: "${VOYAGE_API_KEY:?set VOYAGE_API_KEY (e.g. op read 'op://Infra/Voyage API Key/credential')}"
+      KB_QDRANT_URL: "${KB_QDRANT_URL:-http://localhost:6333}"
+      KB_LLM_URL: "${KB_LLM_URL:-http://localhost:8085/v1}"
+      KB_LLM_MODEL: "${KB_LLM_MODEL:-Qwen3.6-35B-A3B-8bit}"
     restart: unless-stopped

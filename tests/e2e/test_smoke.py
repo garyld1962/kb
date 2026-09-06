@@ -2,7 +2,7 @@
 finds it.
 
 Manual-only (``@pytest.mark.e2e``): requires a live kb-server on the dev host
-watching a vault, backed by real Qdrant + Ollama on the GPU host. See
+watching a vault, backed by real Qdrant plus Voyage (embedding/rerank) and oMLX (answers). See
 docs/runbooks/kb-v1-smoke-test.md for exact preconditions and run
 instructions. Deselected by default (``addopts = "-m 'not e2e'"`` in
 pyproject.toml); run explicitly with ``uv run pytest -m e2e``.
