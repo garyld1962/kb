@@ -67,7 +67,7 @@ kb reads `~/.config/kb/config.yaml` (created automatically on first
 vault_path: /path/to/your/obsidian/vault   # default: ~/obsidian
 server_url: http://localhost:8090          # default: http://localhost:8090
 machine_name: workstation-1                # default: this host's hostname
-default_project: ""                       # optional shortcut for `kb log`
+default_project: ""                       # optional; used by `kb add` when --project is omitted
 ```
 
 Any field can be viewed/set individually:
@@ -156,6 +156,9 @@ still land in the vault either way.
 | `kb ask <question>` | Yes | RAG answer with citations (uses `KB_LLM_MODEL`) |
 | `kb config [get\|set] [key] [value]` | No | View/edit `~/.config/kb/config.yaml` |
 
+Every command also accepts a global `--config <path>` (before the
+subcommand) to read a config file other than `~/.config/kb/config.yaml`.
+
 ## Vault layout kb-server expects
 
 ```
@@ -208,7 +211,7 @@ Then restart kb-server; `ensure_collections()` recreates them empty.
 ## Tests
 
 ```bash
-uv run pytest        # 118 tests (117 collected by default; 1 e2e deselected)
+uv run pytest        # 137 tests (136 collected by default; 1 e2e deselected)
 uv run ruff check .
 ```
 
